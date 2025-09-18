@@ -1,0 +1,35 @@
+{
+  "name": "the-knowledge-base-project",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "type": "module",
+  "scripts": {
+    "dev": "tsx src/index.ts",
+    "build": "tsc -p .",
+    "start": "node dist/index.js"
+  },
+  "dependencies": {
+    "@octokit/app": "^16.0.0",
+    "@octokit/webhooks": "^12.0.0",
+    "dotenv": "^16.4.5",
+    "express": "^4.19.2",
+    "ignore": "^7.0.5",
+    "octokit": "^5.0.3",
+    "openai": "^4.57.0",
+    "pg": "^8.11.3",
+    "pg-format": "^1.0.4",
+    "pgvector": "^0.2.1",
+    "remark-parse": "^11.0.0",
+    "tsx": "^4.16.2",
+    "typescript": "^5.6.3",
+    "unified": "^11.0.5",
+    "unist-util-visit": "^5.0.0"
+  },
+  "author": "",
+  "license": "ISC",
+  "devDependencies": {
+    "ts-node": "^10.9.2",
+    "typescript": "^5.9.2"
+  }
+}
