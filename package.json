@@ -8,13 +8,14 @@
     "dev": "tsx src/index.ts",
     "build": "tsc -p .",
     "start": "node dist/index.js",
-    "migrate": "tsx src/scripts/migration.ts"
+    "migrate": "tsx src/scripts/fix-commit-shas-head.ts"
   },
   "dependencies": {
     "@ai-sdk/anthropic": "^2.0.17",
     "@ai-sdk/google": "^2.0.14",
     "@ai-sdk/openai": "^2.0.32",
     "@octokit/app": "^16.0.0",
+    "@octokit/rest": "^22.0.0",
     "@octokit/webhooks": "^12.0.0",
     "ai": "^5.0.47",
     "dotenv": "^16.4.5",
@@ -22,6 +23,7 @@
     "ignore": "^7.0.5",
     "octokit": "^5.0.3",
     "openai": "^4.57.0",
+    "p-limit": "^7.1.1",
     "pg": "^8.11.3",
     "pg-format": "^1.0.4",
     "pgvector": "^0.2.1",

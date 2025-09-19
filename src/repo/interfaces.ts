@@ -32,6 +32,11 @@ export interface SearchRepository {
     topK?: number;
     filter?: RepoFilter;
   }): Promise<Retrieved[]>;
+  getByPath(params: {
+    repoFull: string;
+    path: string;
+    limitChunks?: number; // e.g., 6
+  }): Promise<Retrieved[]>;
 }
 
 export interface Repositories {

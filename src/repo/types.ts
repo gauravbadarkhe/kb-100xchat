@@ -25,6 +25,7 @@ export type UpsertDocumentInput = {
   path: string;
   lang?: string | null;
   sha: string;
+  blobSha?: string; // NEW: actual blob sha
 };
 
 export type InsertChunkInput = {

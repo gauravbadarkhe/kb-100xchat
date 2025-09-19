@@ -69,9 +69,13 @@ with (m=16, ef_construction=200);
 -- runtime knob
 set hnsw.ef_search = 64; -- try 32–128
 
-
-
 create index if not exists idx_chunks_trgm on chunks using gin (text gin_trgm_ops);
+
+
+
+-- alter
+-- add blob_sha; keep commit_sha as commit-only
+alter table documents add column if not exists blob_sha text;
 `;
 
 async function main() {

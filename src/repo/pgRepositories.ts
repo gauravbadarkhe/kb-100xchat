@@ -24,17 +24,20 @@ function permalink(
 export class PgDocumentsRepository {
   async upsert(input: UpsertDocumentInput): Promise<DocumentRow> {
     const { rows } = await pool.query<DocumentRow>(
-      `INSERT INTO documents (repo_full, commit_sha, path, lang, sha)
-       VALUES ($1,$2,$3,$4,$5)
-       ON CONFLICT (repo_full, commit_sha, path)
-       DO UPDATE SET sha=EXCLUDED.sha, lang=COALESCE(EXCLUDED.lang, documents.lang)
-       RETURNING *`,
+      `insert into documents (repo_full, commit_sha, path, lang, sha, blob_sha)
+     values ($1,$2,$3,$4,$5,$6)
+     on conflict (repo_full, commit_sha, path)
+     do update set sha = excluded.sha,
+                   blob_sha = excluded.blob_sha,
+                   lang = coalesce(excluded.lang, documents.lang)
+     returning *`,
       [
         input.repoFull,
         input.commitSha,
         input.path,
         input.lang ?? null,
         input.sha,
+        input.blobSha ?? null,
       ],
     );
     return rows[0];
@@ -186,5 +189,47 @@ export class PgSearchRepository {
 
     blended.sort((a, b) => b.score - a.score);
     return blended;
+  }
+
+  async getByPath(params: {
+    repoFull: string;
+    path: string;
+    limitChunks?: number;
+  }) {
+    const { repoFull, path, limitChunks = 12 } = params;
+
+    const sql = `
+      SELECT c.id, d.repo_full, d.commit_sha, d.path, c.meta, c.text
+      FROM chunks c
+      JOIN documents d ON d.id = c.document_id
+      WHERE d.repo_full = $1 AND d.path = $2
+      ORDER BY c.ordinal
+      LIMIT $3
+    `;
+    const { rows } = await pool.query<any>(sql, [repoFull, path, limitChunks]);
+
+    return rows.map((r: any) => {
+      const m = r.meta || {};
+      const start = m.start_line ?? null;
+      const end = m.end_line ?? null;
+      const link = permalink(
+        r.repo_full,
+        r.commit_sha,
+        m.path || r.path,
+        start,
+        end,
+      );
+      return {
+        score: 1, // path-pin => treat as strong
+        repo: r.repo_full,
+        path: m.path || r.path,
+        symbol: m.symbol || m.title || null,
+        start_line: start,
+        end_line: end,
+        commit: r.commit_sha,
+        preview: r.text,
+        link,
+      } as Retrieved;
+    });
   }
 }

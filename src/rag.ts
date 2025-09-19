@@ -26,7 +26,13 @@ type Citation = {
 };
 
 type RepoFilterInput = { all?: boolean; repos?: string[] };
-type AskPayload = { q: string; k?: number; filter?: RepoFilterInput };
+type Hints = { paths?: string[]; identifiers?: string[]; aggressive?: boolean };
+type AskPayload = {
+  q: string;
+  k?: number;
+  filter?: RepoFilterInput;
+  hints?: Hints;
+};
 
 function uniqueByFile(items: Retrieved[]) {
   const seen = new Set<string>();
@@ -81,33 +87,107 @@ function buildPrompt(question: string, sources: Retrieved[]) {
   return { system, user };
 }
 
+function groupPathsByRepo(paths: string[]) {
+  // supports either "org/repo/file.ts" or separate "org/repo", "path"
+  return paths.reduce(
+    (acc, full) => {
+      const parts = full.split("/");
+      if (parts.length < 3) return acc;
+      const repoFull = parts.slice(0, 2).join("/");
+      const path = parts.slice(2).join("/");
+      (acc[repoFull] ||= []).push(path);
+      return acc;
+    },
+    {} as Record<string, string[]>,
+  );
+}
+
+async function retrieveHybrid(
+  question: string,
+  topK: number,
+  filter: RepoFilterInput | undefined,
+) {
+  const qv = await embedOne(question);
+  const queryVectorLiteral = `[${qv.join(",")}]`;
+  const normFilter =
+    filter?.all || !filter?.repos?.length
+      ? ({ mode: "all" } as const)
+      : ({ mode: "subset", repos: filter!.repos! } as const);
+
+  return repos.search.hybridSearch({
+    query: question,
+    queryVectorLiteral,
+    topK,
+    filter: normFilter,
+  });
+}
+
+async function keywordOnly(
+  question: string,
+  filter: RepoFilterInput | undefined,
+) {
+  // Reuse hybridSearch with a neutral vector and very high topK? Better: do a term-biased hack:
+  // Quick trick: call hybrid twice with slight query variants emphasizing keywords.
+  return retrieveHybrid(`"${question}"`, 32, filter);
+}
+
 export async function ask(req: Request, res: Response) {
   try {
     const body = (req.body || {}) as AskPayload;
     const question = String(body.q || "").trim();
     if (!question) return res.status(400).json({ error: "q required" });
 
-    const TOP_K = Number.isFinite(body.k as any) ? Number(body.k) : 16;
+    const TOP_K_BASE = Number.isFinite(body.k as any) ? Number(body.k) : 16;
+    const filter = body.filter;
 
-    // Retrieval via repo layer with optional filter
-    const qv = await embedOne(question);
-    const queryVectorLiteral = `[${qv.join(",")}]`;
-    const filter =
-      body.filter?.all || !body.filter?.repos?.length
-        ? ({ mode: "all" } as const)
-        : ({ mode: "subset", repos: body.filter!.repos! } as const);
+    // Pass 1: normal retrieval
+    let retrieved = await retrieveHybrid(question, TOP_K_BASE, filter);
 
-    const retrieved = await repos.search.hybridSearch({
-      query: question,
-      queryVectorLiteral,
-      topK: TOP_K,
-      filter,
-    });
+    // Guard/dedupe
+    const prune = (items: Retrieved[], minScore = 0.25) =>
+      uniqueByFile(items.filter((r) => r.score >= minScore));
 
-    // Guards: score threshold + dedupe by file
-    const MIN_SCORE = 0.25;
-    const pruned = uniqueByFile(retrieved.filter((r) => r.score >= MIN_SCORE));
-    const top = pruned.slice(0, 8); // no rerank
+    let pruned = prune(retrieved, 0.25);
+
+    // If weak, try retry ladder
+    if (!pruned.length || (body.hints?.aggressive && pruned.length < 3)) {
+      // Pass 2: bump K and lower threshold
+      const more = await retrieveHybrid(
+        question,
+        Math.max(48, TOP_K_BASE * 2),
+        filter,
+      );
+      pruned = prune([...retrieved, ...more], 0.15);
+    }
+
+    if (!pruned.length || (body.hints?.aggressive && pruned.length < 3)) {
+      // Pass 3: keyword-only bias
+      const kw = await keywordOnly(question, filter);
+      pruned = prune([...pruned, ...kw], 0.0);
+    }
+
+    // If caller gave exact file hints, force-include them
+    const hintPaths = body.hints?.paths || [];
+    if (hintPaths.length) {
+      const grouped = groupPathsByRepo(hintPaths);
+      const forced: Retrieved[] = [];
+      for (const [repoFull, paths] of Object.entries(grouped)) {
+        for (const p of paths) {
+          const rows = await repos.search.getByPath({
+            repoFull,
+            path: p,
+            limitChunks: 8,
+          });
+          forced.push(...rows);
+        }
+      }
+      // De-dupe and give forced ones a tiny boost so they make the top 8
+      forced.forEach((f) => (f.score = Math.max(f.score, 0.99)));
+      pruned = uniqueByFile([...forced, ...pruned]);
+    }
+
+    // Final top context (no rerank as requested)
+    const top = pruned.slice(0, 8);
 
     if (!top.length) {
       return res.json({
@@ -118,7 +198,7 @@ export async function ask(req: Request, res: Response) {
 
     const { system, user } = buildPrompt(question, top);
 
-    // JSON schema with Zod (safer than ad-hoc JSON.parse)
+    // Schema for safe JSON
     const AnswerSchema = z.object({
       answer: z.string(),
       citations: z
@@ -137,10 +217,8 @@ export async function ask(req: Request, res: Response) {
 
     const parsed = await chatAsObject({ system, user, schema: AnswerSchema });
 
-    // Post-filter citations to only those retrieved
-    const valid = new Map<string, Retrieved>();
-    for (const t of top) valid.set(t.link, t);
-
+    // Post-filter citations
+    const valid = new Map<string, Retrieved>(top.map((t) => [t.link, t]));
     const citations: Citation[] = (parsed.citations || [])
       .filter((c: any) => valid.has(c.link))
       .map((c) => {
@@ -159,7 +237,7 @@ export async function ask(req: Request, res: Response) {
     const finalAnswer =
       (hasMarkers && citations.length) || answerStr
         ? answerStr
-        : ".   Not enough information in the provided sources.";
+        : "Not enough information in the provided sources.";
 
     return res.json({ answer: finalAnswer, citations });
   } catch (e: any) {

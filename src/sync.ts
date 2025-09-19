@@ -90,6 +90,7 @@ async function syncFile(
       path,
       lang,
       sha,
+      blobSha: sha,
     });
 
     // Embed + replace chunks via repo layer
@@ -128,6 +129,24 @@ function languageFromPath(p: string) {
 }
 function hash(s: string) {
   return crypto.createHash("sha256").update(s).digest("hex");
+}
+
+// src/sync.ts (helper)
+async function getBranchHeadCommitSha(
+  octo: any,
+  owner: string,
+  repo: string,
+  branch: string,
+) {
+  const { data } = await octo.request(
+    "GET /repos/{owner}/{repo}/commits/{ref}",
+    {
+      owner,
+      repo,
+      ref: branch,
+    },
+  );
+  return data.sha; // <-- commit sha
 }
 
 // Get default branch + tree + root .gitignore
@@ -172,6 +191,7 @@ export async function fullSync(installationId: number, fullName: string) {
 
   // Optional: cap insane repos or big files fast
   const MAX_FILE_BYTES = 1.5 * 1024 * 1024; // 1.5 MB text cap
+  const headCommitSha = await getBranchHeadCommitSha(octo, owner, repo, branch);
 
   for (const item of entries) {
     const path = item.path as string;
@@ -201,10 +221,11 @@ export async function fullSync(installationId: number, fullName: string) {
       // Upsert document via repo layer
       const doc = await repos.documents.upsert({
         repoFull: fullName,
-        commitSha: fileSha,
+        commitSha: headCommitSha,
         path,
         lang,
         sha: fileSha,
+        blobSha: fileSha,
       });
 
       const chunks =
