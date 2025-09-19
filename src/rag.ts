@@ -159,7 +159,7 @@ export async function ask(req: Request, res: Response) {
     const finalAnswer =
       (hasMarkers && citations.length) || answerStr
         ? answerStr
-        : "Not enough information in the provided sources.";
+        : ".   Not enough information in the provided sources.";
 
     return res.json({ answer: finalAnswer, citations });
   } catch (e: any) {
