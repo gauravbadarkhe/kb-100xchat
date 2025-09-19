@@ -1,61 +1,56 @@
 // src/search.ts
-import { db } from "./db";
 import { embedOne } from "./embeddings";
-import { toPgVectorLiteral } from "./embeddings";
+import { repos } from "./repo";
 
-type Row = {
-  repo_full: string; commit_sha: string; path: string; meta: any; text: string;
-  vs: number; ks: number; -- vector score, keyword score
+export type Retrieved = {
+  score: number;
+  repo: string;
+  path: string;
+  symbol?: string | null;
+  start_line?: number | null;
+  end_line?: number | null;
+  commit: string;
+  preview: string;
 };
 
-export async function hybridSearch(query: string, k = 20) {
-  const qv = toPgVectorLiteral(await embedOne(query));
-  const rows = await db.query<Row>(
-    `
-    WITH vec AS (
-      SELECT c.id, d.repo_full, d.commit_sha, d.path, c.meta, c.text,
-             1 - (c.embedding <=> $1::vector) AS vs
-      FROM chunks c
-      JOIN documents d ON d.id = c.document_id
-      ORDER BY c.embedding <=> $1::vector
-      LIMIT $2
-    ),
-    kw AS (
-      SELECT c.id, d.repo_full, d.commit_sha, d.path, c.meta, c.text,
-             similarity(c.text, $3) AS ks
-      FROM chunks c
-      JOIN documents d ON d.id = c.document_id
-      WHERE c.text % $3
-      ORDER BY c.text <-> $3
-      LIMIT $2
-    ),
-    merged AS (
-      SELECT * FROM vec
-      UNION
-      SELECT * FROM kw
-    )
-    SELECT * FROM merged;`,
-    [qv, k, query]
-  );
+export type RepoFilterInput = { all?: boolean; repos?: string[] };
 
-  // blend score: tune weights (try 0.65/0.35)
-  const blend = rows.rows.map(r => {
-    const meta = r.meta as any;
-    const score = 0.65 * (r as any).vs + 0.35 * (r as any).ks;
-    return {
-      score,
-      repo: r.repo_full,
-      path: r.path,
-      symbol: meta.symbol || meta.title || null,
-      start_line: meta.start_line || null,
-      end_line: meta.end_line || null,
-      commit: r.commit_sha,
-      preview: r.text
-    };
+/**
+ * Hybrid retrieval (vector + keyword via repo layer), with optional repo filter.
+ * - filter.all === true → search across all repos
+ * - filter.repos = ["org/repoA", ...] → restrict to that subset
+ */
+export async function hybridSearch(
+  query: string,
+  k = 20,
+  filter?: RepoFilterInput,
+): Promise<Retrieved[]> {
+  // embed and build vector literal
+  const qv = await embedOne(query);
+  const queryVectorLiteral = `[${qv.join(",")}]`;
+
+  const repoFilter =
+    filter?.all || !filter?.repos?.length
+      ? ({ mode: "all" } as const)
+      : ({ mode: "subset", repos: filter.repos! } as const);
+
+  // Delegate to repo-layer search (already blends/sorts)
+  const items = await repos.search.hybridSearch({
+    query,
+    queryVectorLiteral,
+    topK: k,
+    filter: repoFilter,
   });
 
-  // sort and return top N
-  blend.sort((a, b) => b.score - a.score);
-  return blend.slice(0, k);
+  // Keep API identical to your previous return shape (minus link; rag builds it)
+  return items.map((i) => ({
+    score: i.score,
+    repo: i.repo,
+    path: i.path,
+    symbol: i.symbol ?? null,
+    start_line: i.start_line ?? null,
+    end_line: i.end_line ?? null,
+    commit: i.commit,
+    preview: i.preview,
+  }));
 }
-

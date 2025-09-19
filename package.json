@@ -7,7 +7,8 @@
   "scripts": {
     "dev": "tsx src/index.ts",
     "build": "tsc -p .",
-    "start": "node dist/index.js"
+    "start": "node dist/index.js",
+    "migrate": "tsx src/scripts/migration.ts"
   },
   "dependencies": {
     "@octokit/app": "^16.0.0",

@@ -1,6 +1,8 @@
 // src/util.ts
-import { db } from "./db";
-import { embedOne, toPgVectorLiteral } from "./embeddings";
+import { embedOne } from "./embeddings";
+import { repos } from "./repo";
+
+export type RepoFilterInput = { all?: boolean; repos?: string[] };
 
 export function permalink(
   owner: string,
@@ -14,42 +16,37 @@ export function permalink(
   return `https://github.com/${owner}/${repo}/blob/${commit}/${encodeURI(path)}${range}`;
 }
 
-export async function search(query: string, k = 8) {
-  const qvArr = await embedOne(query);
-  const qv = toPgVectorLiteral(qvArr);
+/**
+ * Search helper using repo-layer hybrid search (vector + keyword).
+ * Keeps the old shape: { score, repo, path, symbol, start_line, end_line, commit, link, preview }
+ */
+export async function search(query: string, k = 8, filter?: RepoFilterInput) {
+  const qv = await embedOne(query);
+  const queryVectorLiteral = `[${qv.join(",")}]`;
 
-  const rows = await db.query(
-    `SELECT d.repo_full, d.commit_sha, (d.path) AS path, c.meta, c.text,
-            1 - (c.embedding <=> $1::vector) AS score     -- <-- CAST HERE
-     FROM chunks c
-     JOIN documents d ON d.id = c.document_id
-     ORDER BY c.embedding <=> $1::vector
-     LIMIT $2`,
-    [qv, k],
-  );
+  const repoFilter =
+    filter?.all || !filter?.repos?.length
+      ? ({ mode: "all" } as const)
+      : ({ mode: "subset", repos: filter!.repos! } as const);
 
-  return rows.rows.map((r) => {
-    const meta = r.meta as any;
-    const [owner, repo] = String(r.repo_full).split("/");
-    const link = permalink(
-      owner,
-      repo,
-      r.commit_sha,
-      meta.path,
-      meta.start_line,
-      meta.end_line,
-    );
-    const preview = r.text.length > 1200 ? r.text.slice(0, 1200) + "…" : r.text;
-    return {
-      score: Number(r.score.toFixed(4)),
-      repo: r.repo_full,
-      path: meta.path,
-      symbol: meta.symbol || meta.title || null,
-      start_line: meta.start_line || null,
-      end_line: meta.end_line || null,
-      commit: r.commit_sha,
-      link,
-      preview,
-    };
+  const items = await repos.search.hybridSearch({
+    query,
+    queryVectorLiteral,
+    topK: k,
+    filter: repoFilter,
   });
+
+  // PgSearchRepository already builds commit-pinned permalinks (link) and includes meta fields
+  return items.map((r) => ({
+    score: Number(r.score.toFixed(4)),
+    repo: r.repo,
+    path: r.path,
+    symbol: r.symbol || null,
+    start_line: r.start_line ?? null,
+    end_line: r.end_line ?? null,
+    commit: r.commit,
+    link: r.link, // already commit-pinned with optional #Lx-Ly
+    preview:
+      r.preview.length > 1200 ? r.preview.slice(0, 1200) + "…" : r.preview,
+  }));
 }

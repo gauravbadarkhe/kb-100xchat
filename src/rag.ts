@@ -1,8 +1,8 @@
 // src/rag.ts
 import type { Request, Response } from "express";
 import OpenAI from "openai";
-import { db } from "./db";
-import { embedOne, toPgVectorLiteral } from "./embeddings";
+import { embedOne } from "./embeddings";
+import { repos } from "./repo";
 
 // ---------- Types ----------
 type Retrieved = {
@@ -14,7 +14,7 @@ type Retrieved = {
   end_line?: number | null;
   commit: string;
   preview: string;
-  link: string;
+  link: string; // commit-pinned permalink (built in repo layer)
 };
 
 type Citation = {
@@ -25,25 +25,12 @@ type Citation = {
   end_line?: number;
 };
 
-type AskPayload = { q: string; k?: number };
+type RepoFilterInput = { all?: boolean; repos?: string[] };
+type AskPayload = { q: string; k?: number; filter?: RepoFilterInput };
 
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
-// ---------- Helpers ----------
-function permalink(
-  repoFull: string,
-  commit: string,
-  path: string,
-  s?: number | null,
-  e?: number | null,
-) {
-  const [owner, repo] = repoFull.split("/");
-  const range = s && e && e !== s ? `#L${s}-L${e}` : s ? `#L${s}` : "";
-  return `https://github.com/${owner}/${repo}/blob/${commit}/${encodeURI(
-    path,
-  )}${range}`;
-}
-
+// ---------- Small helpers ----------
 function uniqueByFile(items: Retrieved[]) {
   const seen = new Set<string>();
   const out: Retrieved[] = [];
@@ -56,91 +43,32 @@ function uniqueByFile(items: Retrieved[]) {
   return out;
 }
 
-// ---------- Hybrid Retrieval (vector + keyword) ----------
-export async function hybridSearch(
-  query: string,
-  k = 24,
+/**
+ * Wrapper around repo-layer hybrid search.
+ * Accepts optional repo filter: all (default) or subset.
+ */
+async function retrieve(
+  question: string,
+  k: number,
+  repoFilter?: RepoFilterInput,
 ): Promise<Retrieved[]> {
-  const qVec = toPgVectorLiteral(await embedOne(query));
+  const qv = await embedOne(question);
+  const queryVectorLiteral = `[${qv.join(",")}]`;
 
-  // Pull top-k by vector and top-k by keyword (pg_trgm), then merge
-  const { rows } = await db.query(
-    `
-    WITH vec AS (
-      SELECT
-        c.id,
-        d.repo_full,
-        d.commit_sha,
-        d.path,
-        c.meta,
-        c.text,
-        (1 - (c.embedding <=> $1::vector)) AS vs
-      FROM chunks c
-      JOIN documents d ON d.id = c.document_id
-      ORDER BY c.embedding <=> $1::vector
-      LIMIT $2
-    ),
-    kw AS (
-      SELECT
-        c.id,
-        d.repo_full,
-        d.commit_sha,
-        d.path,
-        c.meta,
-        c.text,
-        similarity(c.text, $3) AS ks
-      FROM chunks c
-      JOIN documents d ON d.id = c.document_id
-      WHERE c.text % $3
-      ORDER BY c.text <-> $3
-      LIMIT $2
-    ),
-    merged AS (
-      SELECT id, repo_full, commit_sha, path, meta, text, vs, NULL::float AS ks FROM vec
-      UNION
-      SELECT id, repo_full, commit_sha, path, meta, text, NULL::float AS vs, ks FROM kw
-    )
-    SELECT * FROM merged
-    `,
-    [qVec, k, query],
-  );
+  const filter =
+    repoFilter?.all || !repoFilter?.repos?.length
+      ? ({ mode: "all" } as const)
+      : ({ mode: "subset", repos: repoFilter!.repos! } as const);
 
-  // Blend scores (tune weights if needed)
-  const BLEND_V = 0.65;
-  const BLEND_K = 0.35;
-
-  const blended: Retrieved[] = rows.map((r: any) => {
-    const meta = r.meta || {};
-    const vs = Number(r.vs ?? 0);
-    const ks = Number(r.ks ?? 0);
-    const score = BLEND_V * vs + BLEND_K * ks;
-
-    const start = meta.start_line ?? null;
-    const end = meta.end_line ?? null;
-    const link = permalink(
-      r.repo_full,
-      r.commit_sha,
-      meta.path || r.path,
-      start,
-      end,
-    );
-
-    return {
-      score,
-      repo: r.repo_full,
-      path: meta.path || r.path,
-      symbol: meta.symbol || meta.title || null,
-      start_line: start,
-      end_line: end,
-      commit: r.commit_sha,
-      preview: r.text,
-      link,
-    };
+  const items = await repos.search.hybridSearch({
+    query: question,
+    queryVectorLiteral,
+    topK: k,
+    filter,
   });
 
-  // Sort high → low, return
-  blended.sort((a, b) => b.score - a.score);
-  return blended;
+  // Already blended/sorted in repo layer; just return
+  return items;
 }
 
 // ---------- LLM Rerank (cheap pass) ----------
@@ -153,8 +81,9 @@ export async function llmRerank(
   const snippets = cands
     .map(
       (c, i) =>
-        `#${i + 1}\nFILE: ${c.repo}/${c.path}${c.symbol ? ` · ${c.symbol}` : ""}\nTEXT:\n` +
-        c.preview.slice(0, 900),
+        `#${i + 1}\nFILE: ${c.repo}/${c.path}${
+          c.symbol ? ` · ${c.symbol}` : ""
+        }\nTEXT:\n` + c.preview.slice(0, 900),
     )
     .join("\n\n");
 
@@ -242,8 +171,8 @@ export async function ask(req: Request, res: Response) {
 
     const TOP_K = Number.isFinite(body.k as any) ? Number(body.k) : 24;
 
-    // 1) Retrieve
-    const retrieved = await hybridSearch(question, TOP_K);
+    // 1) Retrieve (via repo layer) with optional repo filter
+    const retrieved = await retrieve(question, TOP_K, body.filter);
 
     // 2) Guards: score threshold + dedupe by file
     const MIN_SCORE = 0.2;

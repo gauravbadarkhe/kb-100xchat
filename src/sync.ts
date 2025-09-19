@@ -1,14 +1,16 @@
 // src/sync.ts
 import type { EmitterWebhookEvent } from "@octokit/webhooks";
 import { asInstallation } from "./github";
-import { db } from "./db";
 import { chunkMarkdown } from "./chunkers/markdown";
 import { chunkCode } from "./chunkers/code";
-import { embedBatch, toPgVectorLiteral } from "./embeddings";
+import { embedBatch } from "./embeddings";
 import crypto from "crypto";
 import { makeIgnore } from "./gitignore";
 import { chunkNestControllers } from "./chunkers/nest";
-const BINARY_RE = /\.(png|jpg|jpeg|gif|pdf|zip|tgz|ico|woff2?)$/i;
+import { repos } from "./repo";
+
+const BINARY_RE =
+  /\.(png|jpg|jpeg|gif|pdf|zip|tgz|ico|woff2?|ttf|exe|dylib|so|jar)$/i;
 
 export async function onInstallation(e: EmitterWebhookEvent<"installation">) {
   const { installation } = e.payload;
@@ -27,6 +29,7 @@ export async function onInstallationRepos(
 export async function onPush(e: EmitterWebhookEvent<"push">) {
   const installationId = e.payload.installation?.id;
   if (!installationId) return;
+
   const octo = await asInstallation(installationId);
   const fullName = e.payload.repository.full_name;
   const [owner, repo] = fullName.split("/");
@@ -41,10 +44,8 @@ export async function onPush(e: EmitterWebhookEvent<"push">) {
   const files = data.files || [];
   for (const f of files) {
     if (f.status === "removed") {
-      await db.query(
-        `DELETE FROM documents WHERE repo_full=$1 AND path=$2 AND commit_sha=$3`,
-        [fullName, f.filename, base],
-      );
+      // repo-layer delete
+      await repos.documents.deleteByRepoPathCommit(fullName, f.filename, base);
       continue;
     }
     if (BINARY_RE.test(f.filename)) continue;
@@ -66,6 +67,7 @@ async function syncFile(
       { owner, repo, path, ref: commitSha },
     );
     if (!("content" in file.data)) return;
+
     const sha = (file.data as any).sha;
     const content = Buffer.from((file.data as any).content, "base64").toString(
       "utf8",
@@ -73,6 +75,7 @@ async function syncFile(
 
     const isController = /controller\.ts$/i.test(path);
     const lang = languageFromPath(path);
+
     const chunks =
       lang === "md" || lang === "mdx"
         ? chunkMarkdown(content, path)
@@ -80,73 +83,41 @@ async function syncFile(
           ? chunkNestControllers(content, path)
           : chunkCode(content, path, lang);
 
-    const { rows: docRows } = await db.query(
-      `INSERT INTO documents (repo_full, commit_sha, path, lang, sha)
-       VALUES ($1,$2,$3,$4,$5)
-       ON CONFLICT (repo_full, commit_sha, path) DO UPDATE SET sha=EXCLUDED.sha
-       RETURNING id`,
-      [repoFull, commitSha, path, lang, sha],
-    );
-    const documentId = docRows[0].id;
+    // Upsert document via repo layer
+    const doc = await repos.documents.upsert({
+      repoFull,
+      commitSha,
+      path,
+      lang,
+      sha,
+    });
 
-    // embed + upsert
+    // Embed + replace chunks via repo layer
     const texts = chunks.map((c) => c.text);
     const vectors = await embedBatch(texts);
-    const values = [];
-    for (let i = 0; i < chunks.length; i++) {
-      const c = chunks[i];
-      const v = vectors[i];
-      const h = hash(c.text);
-      values.push({
-        document_id: documentId,
-        ordinal: c.ordinal,
-        text: c.text,
-        meta: JSON.stringify({
-          path,
-          lang,
-          symbol: c.meta.symbol,
-          title: c.meta.title,
-          start_line: c.meta.start_line,
-          end_line: c.meta.end_line,
-          repo_full: repoFull,
-          commit_sha: commitSha,
-        }),
-        hash: h,
-        embedding: toPgVectorLiteral(v),
-      });
-    }
 
-    // simple upsert: delete old chunks for (document_id) then insert
-    await db.query(`DELETE FROM chunks WHERE document_id = $1`, [documentId]);
+    const rows = chunks.map((c, i) => ({
+      documentId: doc.id,
+      ordinal: c.ordinal,
+      text: c.text,
+      meta: {
+        path,
+        lang,
+        symbol: c.meta.symbol,
+        title: c.meta.title,
+        start_line: c.meta.start_line,
+        end_line: c.meta.end_line,
+        repo_full: repoFull,
+        commit_sha: commitSha,
+      },
+      hash: hash(c.text),
+      embedding: vectors[i] || [], // guard just in case
+    }));
 
-    // batch insert
-    const client = await db.getClient();
-    try {
-      await client.query("BEGIN");
-      for (const row of values) {
-        await client.query(
-          `INSERT INTO chunks (document_id, ordinal, text, meta, hash, embedding)
-   VALUES ($1,$2,$3,$4,$5,$6::vector)`,
-          [
-            row.document_id,
-            row.ordinal,
-            row.text,
-            row.meta,
-            row.hash,
-            row.embedding,
-          ],
-        );
-      }
-      await client.query("COMMIT");
-    } catch (e) {
-      await client.query("ROLLBACK");
-      throw e;
-    } finally {
-      client.release();
-    }
+    await repos.chunks.replaceForDocument(doc.id, rows);
 
     console.log("synced", path, "chunks:", chunks.length);
-  } catch (e) {
+  } catch (e: any) {
     console.error("syncFile err", path, e?.message);
   }
 }
@@ -200,9 +171,7 @@ export async function fullSync(installationId: number, fullName: string) {
   const entries = (tree.tree || []).filter((i: any) => i.type === "blob");
 
   // Optional: cap insane repos or big files fast
-  const MAX_FILE_BYTES = 1.5 * 1024 * 1024; // 1.5 MB text cap (adjust as you like)
-  const BINARY_RE =
-    /\.(png|jpg|jpeg|gif|pdf|zip|tgz|ico|woff2?|ttf|exe|dylib|so|jar)$/i;
+  const MAX_FILE_BYTES = 1.5 * 1024 * 1024; // 1.5 MB text cap
 
   for (const item of entries) {
     const path = item.path as string;
@@ -227,65 +196,46 @@ export async function fullSync(installationId: number, fullName: string) {
         "base64",
       ).toString("utf8");
       const lang = languageFromPath(path);
+      const fileSha = (file.data as any).sha;
 
-      const { rows: docRows } = await db.query(
-        `INSERT INTO documents (repo_full, commit_sha, path, lang, sha)
-         VALUES ($1,$2,$3,$4,$5)
-         ON CONFLICT (repo_full, commit_sha, path) DO UPDATE SET sha=EXCLUDED.sha
-         RETURNING id`,
-        [fullName, (file.data as any).sha, path, lang, (file.data as any).sha],
-      );
+      // Upsert document via repo layer
+      const doc = await repos.documents.upsert({
+        repoFull: fullName,
+        commitSha: fileSha,
+        path,
+        lang,
+        sha: fileSha,
+      });
 
-      const documentId = docRows[0].id;
       const chunks =
         lang === "md" || lang === "mdx"
           ? chunkMarkdown(content, path)
-          : chunkCode(content, path, lang);
+          : /controller\.ts$/i.test(path)
+            ? chunkNestControllers(content, path)
+            : chunkCode(content, path, lang);
 
       const texts = chunks.map((c) => c.text);
       const vectors = await embedBatch(texts);
 
-      const client = await db.getClient();
-      try {
-        await client.query("BEGIN");
-        await client.query(`DELETE FROM chunks WHERE document_id = $1`, [
-          documentId,
-        ]);
-        for (let i = 0; i < chunks.length; i++) {
-          const c = chunks[i];
-          const v = vectors[i];
-          if (!v) continue;
-          const h = hash(c.text);
-          const meta = {
-            path,
-            lang,
-            symbol: c.meta.symbol,
-            title: c.meta.title,
-            start_line: c.meta.start_line,
-            end_line: c.meta.end_line,
-            repo_full: fullName,
-            commit_sha: (file.data as any).sha,
-          };
-          await client.query(
-            `INSERT INTO chunks (document_id, ordinal, text, meta, hash, embedding)
-             VALUES ($1,$2,$3,$4,$5,$6::vector)`,
-            [
-              documentId,
-              c.ordinal,
-              c.text,
-              JSON.stringify(meta),
-              h,
-              toPgVectorLiteral(v),
-            ],
-          );
-        }
-        await client.query("COMMIT");
-      } catch (e) {
-        await client.query("ROLLBACK");
-        throw e;
-      } finally {
-        client.release();
-      }
+      const rows = chunks.map((c, i) => ({
+        documentId: doc.id,
+        ordinal: c.ordinal,
+        text: c.text,
+        meta: {
+          path,
+          lang,
+          symbol: c.meta.symbol,
+          title: c.meta.title,
+          start_line: c.meta.start_line,
+          end_line: c.meta.end_line,
+          repo_full: fullName,
+          commit_sha: fileSha,
+        },
+        hash: hash(c.text),
+        embedding: vectors[i] || [],
+      }));
+
+      await repos.chunks.replaceForDocument(doc.id, rows);
 
       console.log("indexed", path);
     } catch (e: any) {
