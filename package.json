@@ -9,7 +9,8 @@
     "build": "next build",
     "start": "next start",
     "lint": "next lint",
-    "migrate": "tsx src/scripts/fix-commit-shas-head.ts"
+    "migrate": "tsx src/scripts/fix-commit-shas-head.ts",
+    "migrate:auth": "tsx src/scripts/migrate-auth.ts"
   },
   "dependencies": {
     "@ai-sdk/anthropic": "^2.0.17",
@@ -21,6 +22,8 @@
     "@radix-ui/react-avatar": "^1.1.10",
     "@radix-ui/react-scroll-area": "^1.2.10",
     "@radix-ui/react-slot": "^1.2.3",
+    "@supabase/auth-helpers-nextjs": "^0.10.0",
+    "@supabase/supabase-js": "^2.57.4",
     "@tailwindcss/postcss": "^4.1.13",
     "@tailwindcss/typography": "^0.5.16",
     "@types/react": "^19.1.13",

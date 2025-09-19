@@ -1,8 +1,7 @@
-// src/db.ts
-import pg from "pg";
-const pool = new pg.Pool({ connectionString: process.env.DATABASE_URL });
+// src/db.tss
 
-export const db = {
-  query: (text: string, params?: any[]) => pool.query(text, params),
-  getClient: () => pool.connect(),
-};
+import { pool } from "./repo/pg";
+
+// 
+export const db = pool
+;

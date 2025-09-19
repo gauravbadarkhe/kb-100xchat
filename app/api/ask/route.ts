@@ -2,6 +2,8 @@ import { NextRequest, NextResponse } from 'next/server'
 import { repos } from '../../../src/repo'
 import { embedOne } from '../../../src/embeddings'
 import { chatAsObject } from '../../../src/ai'
+import { withAuth, createErrorResponse, createSuccessResponse } from '@/src/auth/middleware'
+import { projectsRepo } from '@/src/auth/repositories'
 import { z } from 'zod'
 
 type Retrieved = {
@@ -24,7 +26,7 @@ type Citation = {
   end_line?: number;
 };
 
-type RepoFilterInput = { all?: boolean; repos?: string[] };
+type RepoFilterInput = { all?: boolean; repos?: string[]; projects?: number[] };
 type Hints = { paths?: string[]; identifiers?: string[]; aggressive?: boolean };
 type AskPayload = {
   q: string;
@@ -104,13 +106,30 @@ async function retrieveHybrid(
   question: string,
   topK: number,
   filter: RepoFilterInput | undefined,
+  organizationProjects?: string[], // NEW: Organization-scoped repos
 ) {
   const qv = await embedOne(question);
   const queryVectorLiteral = `[${qv.join(",")}]`;
-  const normFilter =
-    filter?.all || !filter?.repos?.length
-      ? ({ mode: "all" } as const)
-      : ({ mode: "subset", repos: filter!.repos! } as const);
+  
+  // Build filter with organization scope
+  let normFilter: any;
+  
+  if (organizationProjects && organizationProjects.length > 0) {
+    // If user has organization projects, scope to those
+    if (filter?.all || !filter?.repos?.length) {
+      normFilter = { mode: "subset", repos: organizationProjects } as const;
+    } else {
+      // Intersect user's filter with organization projects
+      const allowedRepos = filter.repos.filter(repo => organizationProjects.includes(repo));
+      normFilter = { mode: "subset", repos: allowedRepos } as const;
+    }
+  } else {
+    // Fallback to original behavior for backward compatibility
+    normFilter = 
+      filter?.all || !filter?.repos?.length
+        ? ({ mode: "all" } as const)
+        : ({ mode: "subset", repos: filter!.repos! } as const);
+  }
 
   return repos.search.hybridSearch({
     query: question,
@@ -123,23 +142,58 @@ async function retrieveHybrid(
 async function keywordOnly(
   question: string,
   filter: RepoFilterInput | undefined,
+  organizationProjects?: string[],
 ) {
-  return retrieveHybrid(`"${question}"`, 32, filter);
+  return retrieveHybrid(`"${question}"`, 32, filter, organizationProjects);
 }
 
-export async function POST(request: NextRequest) {
+// Get user's accessible repositories based on their projects
+async function getUserRepositories(organizationId: number): Promise<string[]> {
   try {
+    const projects = await projectsRepo.findActive(organizationId);
+    
+    // For now, we'll get all repositories from the database that are linked to projects
+    // In the future, this could be more sophisticated based on project settings
+    const { db } = await import('../../../src/db');
+    const result = await db.query(`
+      SELECT DISTINCT d.repo_full
+      FROM documents d
+      JOIN projects p ON d.project_id = p.id
+      WHERE p.organization_id = $1 AND p.is_active = true
+    `, [organizationId]);
+    
+    return result.rows.map(row => row.repo_full);
+  } catch (error) {
+    console.error('Error getting user repositories:', error);
+    return [];
+  }
+}
+
+export const POST = withAuth(async (request) => {
+  try {
+    const { authContext } = request;
     const body: AskPayload = await request.json()
     const question = String(body.q || "").trim();
+    
     if (!question) {
-      return NextResponse.json({ error: "q required" }, { status: 400 })
+      return createErrorResponse("Question is required", 400);
     }
 
     const TOP_K_BASE = Number.isFinite(body.k as any) ? Number(body.k) : 16;
     const filter = body.filter;
 
+    // Get user's accessible repositories
+    const organizationRepos = await getUserRepositories(authContext.organization_id);
+    
+    if (organizationRepos.length === 0) {
+      return createSuccessResponse({
+        answer: "No data sources are available for your organization. Please ask an administrator to set up data sources and projects.",
+        citations: [] as Citation[],
+      });
+    }
+
     // Pass 1: normal retrieval
-    let retrieved = await retrieveHybrid(question, TOP_K_BASE, filter);
+    let retrieved = await retrieveHybrid(question, TOP_K_BASE, filter, organizationRepos);
 
     // Guard/dedupe
     const prune = (items: Retrieved[], minScore = 0.25) =>
@@ -154,13 +208,14 @@ export async function POST(request: NextRequest) {
         question,
         Math.max(48, TOP_K_BASE * 2),
         filter,
+        organizationRepos
       );
       pruned = prune([...retrieved, ...more], 0.15);
     }
 
     if (!pruned.length || (body.hints?.aggressive && pruned.length < 3)) {
       // Pass 3: keyword-only bias
-      const kw = await keywordOnly(question, filter);
+      const kw = await keywordOnly(question, filter, organizationRepos);
       pruned = prune([...pruned, ...kw], 0.0);
     }
 
@@ -170,13 +225,16 @@ export async function POST(request: NextRequest) {
       const grouped = groupPathsByRepo(hintPaths);
       const forced: Retrieved[] = [];
       for (const [repoFull, paths] of Object.entries(grouped)) {
-        for (const p of paths) {
-          const rows = await repos.search.getByPath({
-            repoFull,
-            path: p,
-            limitChunks: 8,
-          });
-          forced.push(...rows);
+        // Only include paths from repos the user has access to
+        if (organizationRepos.includes(repoFull)) {
+          for (const p of paths) {
+            const rows = await repos.search.getByPath({
+              repoFull,
+              path: p,
+              limitChunks: 8,
+            });
+            forced.push(...rows);
+          }
         }
       }
       // De-dupe and give forced ones a tiny boost so they make the top 8
@@ -188,7 +246,7 @@ export async function POST(request: NextRequest) {
     const top = pruned.slice(0, 8);
 
     if (!top.length) {
-      return NextResponse.json({
+      return createSuccessResponse({
         answer: "Not enough information in the provided sources.",
         citations: [] as Citation[],
       });
@@ -237,12 +295,9 @@ export async function POST(request: NextRequest) {
         ? answerStr
         : "Not enough information in the provided sources.";
 
-    return NextResponse.json({ answer: finalAnswer, citations });
+    return createSuccessResponse({ answer: finalAnswer, citations });
   } catch (error: any) {
     console.error("ask error:", error?.stack || error?.message || error);
-    return NextResponse.json(
-      { error: "ask_failed", detail: error?.message || "unknown" },
-      { status: 500 }
-    );
+    return createErrorResponse("Ask failed", 500, error?.message || "unknown");
   }
-}
+});

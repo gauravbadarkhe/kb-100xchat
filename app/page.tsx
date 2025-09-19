@@ -6,7 +6,9 @@ import { ScrollArea } from '@/components/ui/scroll-area'
 import { Input } from '@/components/ui/input'
 import { Button } from '@/components/ui/button'
 import { Avatar, AvatarFallback } from '@/components/ui/avatar'
-import { Send, User, Bot } from 'lucide-react'
+import { Send, User, Bot, LogOut, Settings } from 'lucide-react'
+import { useAuth } from '@/components/auth/AuthProvider'
+import { AuthFlow } from '@/components/auth/AuthFlow'
 
 type Message = {
   id: string
@@ -21,10 +23,11 @@ type Message = {
   }>
 }
 
-export default function ChatPage() {
+function ChatInterface() {
   const [messages, setMessages] = useState<Message[]>([])
   const [input, setInput] = useState('')
   const [isLoading, setIsLoading] = useState(false)
+  const { signOut, user, organization } = useAuth()
 
   const sendMessage = async () => {
     if (!input.trim() || isLoading) return
@@ -89,8 +92,24 @@ export default function ChatPage() {
     <div className="min-h-screen bg-background p-4">
       <div className="max-w-4xl mx-auto h-[calc(100vh-2rem)] flex flex-col">
         <Card className="flex-1 flex flex-col">
-          <CardHeader>
-            <CardTitle className="text-center">Knowledge Base Chat</CardTitle>
+          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-4">
+            <CardTitle className="text-center flex-1">Knowledge Base Chat</CardTitle>
+            <div className="flex items-center gap-4">
+              {user && (
+                <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                  <Avatar className="h-6 w-6">
+                    <AvatarFallback className="text-xs">
+                      {user.full_name?.charAt(0) || user.email.charAt(0)}
+                    </AvatarFallback>
+                  </Avatar>
+                  <span>{user.full_name || user.email}</span>
+                  {organization && <span>• {organization.name}</span>}
+                </div>
+              )}
+              <Button variant="ghost" size="sm" onClick={signOut}>
+                <LogOut className="h-4 w-4" />
+              </Button>
+            </div>
           </CardHeader>
           <CardContent className="flex-1 flex flex-col p-0">
             <ScrollArea className="flex-1 p-6">
@@ -214,6 +233,60 @@ export default function ChatPage() {
           </CardContent>
         </Card>
       </div>
+    </div>
+  )
+}
+
+export default function HomePage() {
+  const { isLoading, isAuthenticated, user, organization, refreshAuth } = useAuth()
+  const [isRedirecting, setIsRedirecting] = useState(false)
+
+  const handleAuthSuccess = async () => {
+    console.log('Authentication successful - redirecting to home...')
+    setIsRedirecting(true)
+    
+    // Explicitly refresh auth state to ensure immediate redirect
+    await refreshAuth()
+    
+    // Clear redirecting state after a short delay
+    setTimeout(() => {
+      setIsRedirecting(false)
+    }, 500)
+  }
+
+  const handleAuthError = (error: string) => {
+    console.error('Authentication error:', error)
+    setIsRedirecting(false)
+  }
+
+  // Show loading or redirecting state
+  if (isLoading || isRedirecting) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-background">
+        <div className="flex flex-col items-center gap-4">
+          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-primary"></div>
+          <p className="text-muted-foreground">
+            {isRedirecting ? 'Redirecting to your knowledge base...' : 'Loading...'}
+          </p>
+        </div>
+      </div>
+    )
+  }
+
+  // Show authentication flow if not authenticated
+  if (!isAuthenticated) {
+    return (
+      <AuthFlow
+        onAuthSuccess={handleAuthSuccess}
+        onAuthError={handleAuthError}
+      />
+    )
+  }
+
+  // Show main application if authenticated
+  return (
+    <div className="fade-in">
+      <ChatInterface />
     </div>
   )
 }
