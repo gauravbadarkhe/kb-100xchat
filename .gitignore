@@ -27,6 +27,7 @@ coverage/
 tmp/
 temp/
 
+.next/
 # npm package manager cache
 .npm/
 
