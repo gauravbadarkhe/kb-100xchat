@@ -56,6 +56,22 @@ create table if not exists messages (
 );
 
 create index if not exists idx_messages_session on messages(session_id, id);
+
+
+
+----Speed Boost-----------------
+
+-- cosine similarity
+create index if not exists idx_chunks_vec_hnsw
+on chunks using hnsw (embedding vector_cosine_ops)
+with (m=16, ef_construction=200);
+
+-- runtime knob
+set hnsw.ef_search = 64; -- try 32–128
+
+
+
+create index if not exists idx_chunks_trgm on chunks using gin (text gin_trgm_ops);
 `;
 
 async function main() {
