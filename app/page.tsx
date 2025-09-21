@@ -48,6 +48,7 @@ function ChatInterface() {
         headers: {
           'Content-Type': 'application/json',
         },
+        credentials: 'include', // Include cookies for session-based auth
         body: JSON.stringify({
           q: input,
           k: 8,
@@ -55,7 +56,11 @@ function ChatInterface() {
       })
 
       if (!response.ok) {
-        throw new Error('Failed to get response')
+        const errorData = await response.json().catch(() => ({}))
+        if (response.status === 401) {
+          throw new Error('Authentication failed. Please sign in again.')
+        }
+        throw new Error(errorData.error || 'Failed to get response')
       }
 
       const data = await response.json()
@@ -73,7 +78,7 @@ function ChatInterface() {
       const errorMessage: Message = {
         id: (Date.now() + 1).toString(),
         role: 'assistant',
-        content: 'Sorry, there was an error processing your request.',
+        content: `Sorry, there was an error processing your request: ${error instanceof Error ? error.message : 'Unknown error'}`,
       }
       setMessages(prev => [...prev, errorMessage])
     } finally {
@@ -106,6 +111,14 @@ function ChatInterface() {
                   {organization && <span>• {organization.name}</span>}
                 </div>
               )}
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => window.location.href = '/sources'}
+              >
+                <Settings className="h-4 w-4 mr-2" />
+                Sources
+              </Button>
               <Button variant="ghost" size="sm" onClick={signOut}>
                 <LogOut className="h-4 w-4" />
               </Button>
@@ -151,6 +164,21 @@ function ChatInterface() {
                           </p>
                         ))}
                       </div>
+                      
+                      {/* Show "Add Data Sources" button for no data sources message */}
+                      {message.role === 'assistant' && message.content.includes('No data sources are available for your organization') && (
+                        <div className="mt-4 pt-3 border-t border-border/50">
+                          <a
+                            href="/sources"
+                            className="inline-flex items-center px-4 py-2 text-sm font-medium text-white bg-blue-600 border border-transparent rounded-md hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 transition-colors"
+                          >
+                            <svg className="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6v6m0 0v6m0-6h6m-6 0H6" />
+                            </svg>
+                            Add Data Sources
+                          </a>
+                        </div>
+                      )}
                       
                       {message.citations && message.citations.length > 0 && (
                         <div className="mt-3 pt-3 border-t border-border/50">

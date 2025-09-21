@@ -5,8 +5,8 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { useAuth } from '@/components/auth/AuthProvider';
-import { sourcesRepo } from '@/src/auth/repositories';
-import { SourceRow, SourceType, CreateSourceInput, UpdateSourceInput } from '@/src/auth/types';
+import { SourceRow, SourceType } from '@/src/auth/types';
+import { GitHubRepositorySelector } from '@/components/sources/GitHubRepositorySelector';
 
 interface SourceFormProps {
   source?: SourceRow; // If provided, it's edit mode
@@ -30,6 +30,7 @@ export function SourceForm({ source, onSuccess, onCancel }: SourceFormProps) {
   
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [showGitHubSelector, setShowGitHubSelector] = useState(false);
 
   const isEditMode = !!source;
 
@@ -44,25 +45,49 @@ export function SourceForm({ source, onSuccess, onCancel }: SourceFormProps) {
       let savedSource: SourceRow;
 
       if (isEditMode && source) {
-        // Update existing source
-        const updateData: UpdateSourceInput = {
-          name: formData.name,
-          description: formData.description || undefined,
-          type: formData.type,
-          config: formData.config
-        };
-        savedSource = await sourcesRepo.update(source.id, updateData);
+        // Update existing source via API
+        const response = await fetch(`/api/sources/${source.id}`, {
+          method: 'PUT',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          credentials: 'include',
+          body: JSON.stringify({
+            name: formData.name,
+            description: formData.description || undefined,
+            type: formData.type,
+            config: formData.config
+          })
+        });
+
+        if (!response.ok) {
+          const errorData = await response.json().catch(() => ({}));
+          throw new Error(errorData.error || 'Failed to update source');
+        }
+
+        savedSource = await response.json();
       } else {
-        // Create new source
-        const createData: CreateSourceInput = {
-          organization_id: authContext.organization_id,
-          created_by: authContext.user_id,
-          name: formData.name,
-          description: formData.description || undefined,
-          type: formData.type,
-          config: formData.config
-        };
-        savedSource = await sourcesRepo.create(createData);
+        // Create new source via API
+        const response = await fetch('/api/sources', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          credentials: 'include',
+          body: JSON.stringify({
+            name: formData.name,
+            description: formData.description || undefined,
+            type: formData.type,
+            config: formData.config
+          })
+        });
+
+        if (!response.ok) {
+          const errorData = await response.json().catch(() => ({}));
+          throw new Error(errorData.error || 'Failed to create source');
+        }
+
+        savedSource = await response.json();
       }
 
       onSuccess?.(savedSource);
@@ -92,59 +117,107 @@ export function SourceForm({ source, onSuccess, onCancel }: SourceFormProps) {
     if (error) setError(null);
   };
 
+  const handleGitHubRepositorySelect = (repository: any, installationId: number) => {
+    setFormData(prev => ({
+      ...prev,
+      name: repository.full_name,
+      description: repository.description || `GitHub repository: ${repository.full_name}`,
+      config: {
+        installation_id: installationId,
+        repository: repository.full_name,
+        repository_id: repository.id,
+        default_branch: repository.default_branch,
+        private: repository.private
+      }
+    }));
+    setShowGitHubSelector(false);
+  };
+
   const renderConfigFields = () => {
     switch (formData.type) {
       case 'github':
+        if (isEditMode) {
+          // Show read-only config for existing sources
+          return (
+            <div className="space-y-4">
+              <div className="space-y-2">
+                <label className="text-sm font-medium">Repository</label>
+                <div className="px-3 py-2 bg-muted rounded-md text-sm">
+                  {formData.config.repository || 'Not configured'}
+                </div>
+              </div>
+              
+              <div className="space-y-2">
+                <label className="text-sm font-medium">Default Branch</label>
+                <div className="px-3 py-2 bg-muted rounded-md text-sm">
+                  {formData.config.default_branch || 'main'}
+                </div>
+              </div>
+
+              <div className="space-y-2">
+                <label className="text-sm font-medium">Installation ID</label>
+                <div className="px-3 py-2 bg-muted rounded-md text-sm">
+                  {formData.config.installation_id || 'Not configured'}
+                </div>
+              </div>
+
+              <div className="space-y-2">
+                <label htmlFor="path" className="text-sm font-medium">
+                  Path Filter
+                </label>
+                <Input
+                  id="path"
+                  type="text"
+                  value={formData.config.path || ''}
+                  onChange={handleInputChange('config.path')}
+                  placeholder="docs/ (optional - leave empty for entire repo)"
+                  disabled={isLoading}
+                />
+                <p className="text-xs text-muted-foreground">
+                  Optional: Specify a directory to index (e.g., docs/, src/)
+                </p>
+              </div>
+            </div>
+          );
+        }
+
+        // New GitHub source creation
+        if (!formData.config.repository) {
+          return (
+            <div className="space-y-4">
+              <div className="text-center py-6">
+                <p className="text-sm text-muted-foreground mb-4">
+                  Connect your GitHub account to select a repository
+                </p>
+                <Button
+                  type="button"
+                  onClick={() => setShowGitHubSelector(true)}
+                  disabled={isLoading}
+                >
+                  Select GitHub Repository
+                </Button>
+              </div>
+            </div>
+          );
+        }
+
+        // Repository selected, show configuration options
         return (
           <div className="space-y-4">
             <div className="space-y-2">
-              <label htmlFor="token" className="text-sm font-medium">
-                GitHub Access Token *
-              </label>
-              <Input
-                id="token"
-                type="password"
-                value={formData.config.token || ''}
-                onChange={handleInputChange('config.token')}
-                placeholder="ghp_xxxxxxxxxxxxxxxxxxxx"
-                required
-                disabled={isLoading}
-              />
-              <p className="text-xs text-muted-foreground">
-                Create a personal access token with repo access at github.com/settings/tokens
-              </p>
-            </div>
-            
-            <div className="space-y-2">
-              <label htmlFor="repository" className="text-sm font-medium">
-                Repository *
-              </label>
-              <Input
-                id="repository"
-                type="text"
-                value={formData.config.repository || ''}
-                onChange={handleInputChange('config.repository')}
-                placeholder="owner/repository-name"
-                required
-                disabled={isLoading}
-              />
-              <p className="text-xs text-muted-foreground">
-                Format: owner/repository-name (e.g., facebook/react)
-              </p>
-            </div>
-
-            <div className="space-y-2">
-              <label htmlFor="branch" className="text-sm font-medium">
-                Default Branch
-              </label>
-              <Input
-                id="branch"
-                type="text"
-                value={formData.config.branch || 'main'}
-                onChange={handleInputChange('config.branch')}
-                placeholder="main"
-                disabled={isLoading}
-              />
+              <label className="text-sm font-medium">Selected Repository</label>
+              <div className="flex items-center justify-between px-3 py-2 bg-muted rounded-md">
+                <span className="text-sm">{formData.config.repository}</span>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setShowGitHubSelector(true)}
+                  disabled={isLoading}
+                >
+                  Change
+                </Button>
+              </div>
             </div>
 
             <div className="space-y-2">
@@ -162,6 +235,20 @@ export function SourceForm({ source, onSuccess, onCancel }: SourceFormProps) {
               <p className="text-xs text-muted-foreground">
                 Optional: Specify a directory to index (e.g., docs/, src/)
               </p>
+            </div>
+
+            <div className="flex items-center space-x-2">
+              <input
+                id="auto_sync"
+                type="checkbox"
+                checked={formData.config.auto_sync !== false}
+                onChange={handleInputChange('config.auto_sync')}
+                disabled={isLoading}
+                className="rounded border-input"
+              />
+              <label htmlFor="auto_sync" className="text-sm font-medium">
+                Enable automatic sync via webhooks
+              </label>
             </div>
           </div>
         );
@@ -497,6 +584,17 @@ export function SourceForm({ source, onSuccess, onCancel }: SourceFormProps) {
   };
 
   if (!authContext) return null;
+
+  // Show GitHub repository selector
+  if (showGitHubSelector) {
+    return (
+      <GitHubRepositorySelector
+        onRepositorySelect={handleGitHubRepositorySelect}
+        onCancel={() => setShowGitHubSelector(false)}
+        selectedRepository={formData.config.repository}
+      />
+    );
+  }
 
   return (
     <Card className="w-full max-w-2xl">

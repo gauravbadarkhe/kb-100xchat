@@ -8,7 +8,7 @@ const CreateSourceSchema = z.object({
   name: z.string().min(1, 'Source name is required'),
   description: z.string().optional(),
   type: z.enum(['github', 'bitbucket', 'gitlab', 'documentation', 'confluence', 'notion', 'file_upload', 'other'] as const),
-  config: z.record(z.any()),
+  config: z.record(z.string(), z.any()),
 });
 
 const SearchSourcesSchema = z.object({
@@ -33,7 +33,7 @@ export const GET = withAuth(async (request) => {
     // Validate query parameters
     const validation = SearchSourcesSchema.safeParse(queryParams);
     if (!validation.success) {
-      return createErrorResponse('Invalid query parameters', 400, validation.error.issues);
+      return createErrorResponse('Invalid query parameters', 400, JSON.stringify(validation.error.issues));
     }
 
     const { type, page = 1, limit = 20 } = validation.data;
@@ -56,7 +56,7 @@ export const GET = withAuth(async (request) => {
     // Get total count for pagination
     const totalCount = await sourcesRepo.count([
       { field: 'organization_id', operator: '=', value: authContext.organization_id },
-      ...(type ? [{ field: 'type', operator: '=', value: type }] : [])
+      ...(type ? [{ field: 'type', operator: '=' as const, value: type }] : [])
     ]);
 
     return createSuccessResponse({
@@ -83,7 +83,7 @@ export const POST = withMemberAuth(async (request) => {
     // Validate input
     const validation = CreateSourceSchema.safeParse(body);
     if (!validation.success) {
-      return createErrorResponse('Invalid input', 400, validation.error.issues);
+      return createErrorResponse('Invalid input', 400, JSON.stringify(validation.error.issues));
     }
 
     const { name, description, type, config } = validation.data;
@@ -91,7 +91,7 @@ export const POST = withMemberAuth(async (request) => {
     // Validate source-specific configuration
     const configValidation = validateSourceConfig(type, config);
     if (!configValidation.valid) {
-      return createErrorResponse('Invalid configuration', 400, configValidation.errors);
+      return createErrorResponse('Invalid configuration', 400, Array.isArray(configValidation.errors) ? configValidation.errors.join(', ') : configValidation.errors);
     }
 
     const createData: CreateSourceInput = {
@@ -104,6 +104,16 @@ export const POST = withMemberAuth(async (request) => {
     };
 
     const source = await sourcesRepo.create(createData);
+
+    // Trigger initial sync for GitHub sources
+    if (type === 'github' && config.installation_id) {
+      // Import and trigger sync asynchronously (don't wait for completion)
+      import('@/src/webhook/handlers').then(({ triggerInitialSync }) => {
+        triggerInitialSync(source).catch(error => {
+          console.error('Failed to trigger initial sync:', error);
+        });
+      });
+    }
 
     return createSuccessResponse(source, 201);
   } catch (error: any) {
@@ -118,10 +128,15 @@ function validateSourceConfig(type: SourceType, config: Record<string, any>): { 
 
   switch (type) {
     case 'github':
-      if (!config.token) errors.push('GitHub token is required');
+      if (!config.installation_id && !config.token) {
+        errors.push('GitHub installation ID or token is required');
+      }
       if (!config.repository) errors.push('Repository is required');
       if (config.repository && !config.repository.includes('/')) {
         errors.push('Repository must be in format owner/repository-name');
+      }
+      if (config.installation_id && typeof config.installation_id !== 'number') {
+        errors.push('Installation ID must be a number');
       }
       break;
 

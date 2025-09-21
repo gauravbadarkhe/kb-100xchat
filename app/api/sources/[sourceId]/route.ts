@@ -7,7 +7,7 @@ import { z } from 'zod';
 const UpdateSourceSchema = z.object({
   name: z.string().min(1).optional(),
   description: z.string().optional(),
-  config: z.record(z.any()).optional(),
+  config: z.record(z.string(), z.any()).optional(),
   is_active: z.boolean().optional(),
 });
 
@@ -24,10 +24,11 @@ async function validateSourceAccess(sourceId: number, organizationId: number) {
 }
 
 // GET /api/sources/[sourceId] - Get specific source
-export const GET = withAuth(async (request, { params }: { params: { sourceId: string } }) => {
+export const GET = withAuth(async (request, { params }: { params: Promise<{ sourceId: string }> }) => {
   try {
     const { authContext } = request;
-    const sourceId = parseInt(params.sourceId);
+    const { sourceId: sourceIdStr } = await params;
+    const sourceId = parseInt(sourceIdStr);
     
     if (isNaN(sourceId)) {
       return createErrorResponse('Invalid source ID', 400);
@@ -51,10 +52,11 @@ export const GET = withAuth(async (request, { params }: { params: { sourceId: st
 });
 
 // PUT /api/sources/[sourceId] - Update source (member+ only)
-export const PUT = withMemberAuth(async (request, { params }: { params: { sourceId: string } }) => {
+export const PUT = withMemberAuth(async (request, { params }: { params: Promise<{ sourceId: string }> }) => {
   try {
     const { authContext } = request;
-    const sourceId = parseInt(params.sourceId);
+    const { sourceId: sourceIdStr } = await params;
+    const sourceId = parseInt(sourceIdStr);
     
     if (isNaN(sourceId)) {
       return createErrorResponse('Invalid source ID', 400);
@@ -68,7 +70,7 @@ export const PUT = withMemberAuth(async (request, { params }: { params: { source
     // Validate input
     const validation = UpdateSourceSchema.safeParse(body);
     if (!validation.success) {
-      return createErrorResponse('Invalid input', 400, validation.error.issues);
+      return createErrorResponse('Invalid input', 400, JSON.stringify(validation.error.issues));
     }
 
     const updateData = validation.data;
@@ -96,10 +98,11 @@ export const PUT = withMemberAuth(async (request, { params }: { params: { source
 });
 
 // DELETE /api/sources/[sourceId] - Delete source (member+ only)
-export const DELETE = withMemberAuth(async (request, { params }: { params: { sourceId: string } }) => {
+export const DELETE = withMemberAuth(async (request, { params }: { params: Promise<{ sourceId: string }> }) => {
   try {
     const { authContext } = request;
-    const sourceId = parseInt(params.sourceId);
+    const { sourceId: sourceIdStr } = await params;
+    const sourceId = parseInt(sourceIdStr);
     
     if (isNaN(sourceId)) {
       return createErrorResponse('Invalid source ID', 400);

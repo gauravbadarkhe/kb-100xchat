@@ -8,7 +8,7 @@ const CreateProjectSchema = z.object({
   name: z.string().min(1, 'Project name is required'),
   description: z.string().optional(),
   source_id: z.number().optional(),
-  settings: z.record(z.any()).optional(),
+  settings: z.record(z.string(), z.any()).optional(),
 });
 
 const SearchProjectsSchema = z.object({
@@ -33,7 +33,7 @@ export const GET = withAuth(async (request) => {
     // Validate query parameters
     const validation = SearchProjectsSchema.safeParse(queryParams);
     if (!validation.success) {
-      return createErrorResponse('Invalid query parameters', 400, validation.error.issues);
+      return createErrorResponse('Invalid query parameters', 400, JSON.stringify(validation.error.issues));
     }
 
     const { q, page = 1, limit = 20 } = validation.data;
@@ -80,7 +80,7 @@ export const POST = withMemberAuth(async (request) => {
     // Validate input
     const validation = CreateProjectSchema.safeParse(body);
     if (!validation.success) {
-      return createErrorResponse('Invalid input', 400, validation.error.issues);
+      return createErrorResponse('Invalid input', 400, JSON.stringify(validation.error.issues));
     }
 
     const { name, description, source_id, settings } = validation.data;

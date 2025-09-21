@@ -41,7 +41,7 @@ export async function POST(request: NextRequest) {
     // Validate input
     const validation = CreateOrganizationSchema.safeParse(body);
     if (!validation.success) {
-      return createErrorResponse('Invalid input', 400, validation.error.issues);
+      return createErrorResponse('Invalid input', 400, JSON.stringify(validation.error.issues));
     }
 
     const { organizationName, organizationDescription, userEmail, userFullName } = validation.data;
@@ -91,7 +91,7 @@ export const PUT = withAuth(async (request) => {
     // Validate input
     const validation = UpdateOrganizationSchema.safeParse(body);
     if (!validation.success) {
-      return createErrorResponse('Invalid input', 400, validation.error.issues);
+      return createErrorResponse('Invalid input', 400, JSON.stringify(validation.error.issues));
     }
 
     const updateData = validation.data;

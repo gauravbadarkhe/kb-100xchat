@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { withAuth, withMemberAuth, withOrganizationAccess, createErrorResponse, createSuccessResponse } from '@/src/auth/middleware';
+import { withAuth, withMemberAuth, withOrganizationAccess, createErrorResponse, createSuccessResponse, AuthenticatedRequest } from '@/src/auth/middleware';
 import { projectsRepo } from '@/src/auth/repositories';
 import { UpdateProjectInput } from '@/src/auth/types';
 import { z } from 'zod';
@@ -8,7 +8,7 @@ const UpdateProjectSchema = z.object({
   name: z.string().min(1).optional(),
   description: z.string().optional(),
   source_id: z.number().optional(),
-  settings: z.record(z.any()).optional(),
+  settings: z.record(z.string(), z.any()).optional(),
   is_active: z.boolean().optional(),
 });
 
@@ -25,10 +25,11 @@ async function validateProjectAccess(projectId: number, organizationId: number) 
 }
 
 // GET /api/projects/[projectId] - Get specific project
-export const GET = withAuth(async (request, { params }: { params: { projectId: string } }) => {
+export const GET = withAuth(async (request, { params }: { params: Promise<{ projectId: string }> }) => {
   try {
     const { authContext } = request;
-    const projectId = parseInt(params.projectId);
+    const { projectId: projectIdStr } = await params;
+    const projectId = parseInt(projectIdStr);
     
     if (isNaN(projectId)) {
       return createErrorResponse('Invalid project ID', 400);
@@ -52,10 +53,11 @@ export const GET = withAuth(async (request, { params }: { params: { projectId: s
 });
 
 // PUT /api/projects/[projectId] - Update project (member+ only)
-export const PUT = withMemberAuth(async (request, { params }: { params: { projectId: string } }) => {
+export const PUT = withMemberAuth(async (request, { params }: { params: Promise<{ projectId: string }> }) => {
   try {
     const { authContext } = request;
-    const projectId = parseInt(params.projectId);
+    const { projectId: projectIdStr } = await params;
+    const projectId = parseInt(projectIdStr);
     
     if (isNaN(projectId)) {
       return createErrorResponse('Invalid project ID', 400);
@@ -69,7 +71,7 @@ export const PUT = withMemberAuth(async (request, { params }: { params: { projec
     // Validate input
     const validation = UpdateProjectSchema.safeParse(body);
     if (!validation.success) {
-      return createErrorResponse('Invalid input', 400, validation.error.issues);
+      return createErrorResponse('Invalid input', 400, JSON.stringify(validation.error.issues));
     }
 
     const updateData = validation.data;
@@ -100,10 +102,11 @@ export const PUT = withMemberAuth(async (request, { params }: { params: { projec
 });
 
 // DELETE /api/projects/[projectId] - Delete project (member+ only)
-export const DELETE = withMemberAuth(async (request, { params }: { params: { projectId: string } }) => {
+export const DELETE = withMemberAuth(async (request, { params }: { params: Promise<{ projectId: string }> }) => {
   try {
     const { authContext } = request;
-    const projectId = parseInt(params.projectId);
+    const { projectId: projectIdStr } = await params;
+    const projectId = parseInt(projectIdStr);
     
     if (isNaN(projectId)) {
       return createErrorResponse('Invalid project ID', 400);

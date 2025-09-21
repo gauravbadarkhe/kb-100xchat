@@ -9,10 +9,11 @@ const UpdateUserRoleSchema = z.object({
 });
 
 // PUT /api/users/[userId] - Update user role (admin only)
-export const PUT = withAdminAuth(async (request, { params }: { params: { userId: string } }) => {
+export const PUT = withAdminAuth(async (request, { params }: { params: Promise<{ userId: string }> }) => {
   try {
     const { authContext } = request;
-    const userId = parseInt(params.userId);
+    const { userId: userIdStr } = await params;
+    const userId = parseInt(userIdStr);
     
     if (isNaN(userId)) {
       return createErrorResponse('Invalid user ID', 400);
@@ -23,7 +24,7 @@ export const PUT = withAdminAuth(async (request, { params }: { params: { userId:
     // Validate input
     const validation = UpdateUserRoleSchema.safeParse(body);
     if (!validation.success) {
-      return createErrorResponse('Invalid input', 400, validation.error.issues);
+      return createErrorResponse('Invalid input', 400, JSON.stringify(validation.error.issues));
     }
 
     const { role } = validation.data;
@@ -42,10 +43,11 @@ export const PUT = withAdminAuth(async (request, { params }: { params: { userId:
 });
 
 // DELETE /api/users/[userId] - Remove user from organization (admin only)
-export const DELETE = withAdminAuth(async (request, { params }: { params: { userId: string } }) => {
+export const DELETE = withAdminAuth(async (request, { params }: { params: Promise<{ userId: string }> }) => {
   try {
     const { authContext } = request;
-    const userId = parseInt(params.userId);
+    const { userId: userIdStr } = await params;
+    const userId = parseInt(userIdStr);
     
     if (isNaN(userId)) {
       return createErrorResponse('Invalid user ID', 400);

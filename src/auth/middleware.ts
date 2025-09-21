@@ -5,6 +5,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { supabase } from './supabase';
 import { usersRepo } from './repositories';
 import { AuthContext } from './types';
+import { AuthService } from './service';
 
 export type AuthenticatedRequest = NextRequest & {
   authContext: AuthContext;
@@ -13,49 +14,49 @@ export type AuthenticatedRequest = NextRequest & {
 /**
  * Middleware to authenticate API requests
  */
-export async function withAuth<T extends any[]>(
+export function withAuth<T extends any[]>(
   handler: (request: AuthenticatedRequest, ...args: T) => Promise<NextResponse>
 ) {
   return async (request: NextRequest, ...args: T): Promise<NextResponse> => {
     try {
-      // Get authorization header
+      let authContext: AuthContext | null = null;
+
+      // Method 1: Try Bearer token authentication
       const authHeader = request.headers.get('authorization');
-      if (!authHeader || !authHeader.startsWith('Bearer ')) {
-        return NextResponse.json(
-          { error: 'Authorization header required' },
-          { status: 401 }
-        );
+      if (authHeader && authHeader.startsWith('Bearer ')) {
+        const token = authHeader.substring(7); // Remove 'Bearer ' prefix
+
+        // Verify token with Supabase
+        const { data: { user }, error } = await supabase.auth.getUser(token);
+        if (!error && user) {
+          // Get user from our database
+          const dbUser = await usersRepo.findByAuthId(user.id);
+          if (dbUser) {
+            authContext = {
+              user_id: dbUser.id,
+              auth_id: dbUser.auth_id,
+              organization_id: dbUser.organization_id,
+              role: dbUser.role,
+              email: dbUser.email
+            };
+          }
+        }
       }
 
-      const token = authHeader.substring(7); // Remove 'Bearer ' prefix
-
-      // Verify token with Supabase
-      const { data: { user }, error } = await supabase.auth.getUser(token);
-      if (error || !user) {
-        return NextResponse.json(
-          { error: 'Invalid or expired token' },
-          { status: 401 }
-        );
+      // Method 2: If no valid token, try session-based authentication
+      if (!authContext) {
+        authContext = await AuthService.getCurrentAuthContext();
       }
 
-      // Get user from our database
-      const dbUser = await usersRepo.findByAuthId(user.id);
-      if (!dbUser) {
+      // If both methods failed, return unauthorized
+      if (!authContext) {
         return NextResponse.json(
-          { error: 'User not found in organization' },
+          { error: 'Authentication required' },
           { status: 401 }
         );
       }
 
       // Add auth context to request
-      const authContext: AuthContext = {
-        user_id: dbUser.id,
-        auth_id: dbUser.auth_id,
-        organization_id: dbUser.organization_id,
-        role: dbUser.role,
-        email: dbUser.email
-      };
-
       (request as AuthenticatedRequest).authContext = authContext;
 
       return handler(request as AuthenticatedRequest, ...args);

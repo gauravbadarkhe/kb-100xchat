@@ -38,7 +38,7 @@ export const POST = withAdminAuth(async (request) => {
     // Validate input
     const validation = InviteUserSchema.safeParse(body);
     if (!validation.success) {
-      return createErrorResponse('Invalid input', 400, validation.error.issues);
+      return createErrorResponse('Invalid input', 400, JSON.stringify(validation.error.issues));
     }
 
     const { email, role } = validation.data;

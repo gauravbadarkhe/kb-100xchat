@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { repos } from '../../../src/repo'
 import { embedOne } from '../../../src/embeddings'
 import { chatAsObject } from '../../../src/ai'
-import { withAuth, createErrorResponse, createSuccessResponse } from '@/src/auth/middleware'
+import { withAuth, createErrorResponse, createSuccessResponse, AuthenticatedRequest } from '@/src/auth/middleware'
 import { projectsRepo } from '@/src/auth/repositories'
 import { z } from 'zod'
 
@@ -169,7 +169,8 @@ async function getUserRepositories(organizationId: number): Promise<string[]> {
   }
 }
 
-export const POST = withAuth(async (request) => {
+// Handler function for the POST endpoint
+async function handlePost(request: AuthenticatedRequest): Promise<NextResponse> {
   try {
     const { authContext } = request;
     const body: AskPayload = await request.json()
@@ -187,7 +188,7 @@ export const POST = withAuth(async (request) => {
     
     if (organizationRepos.length === 0) {
       return createSuccessResponse({
-        answer: "No data sources are available for your organization. Please ask an administrator to set up data sources and projects.",
+        answer: "No data sources are available for your organization. To get started, please add data sources (like GitHub repositories, documentation sites, or file uploads) on the Sources page. Once you've connected your data sources and they've been indexed, you'll be able to ask questions about their content.",
         citations: [] as Citation[],
       });
     }
@@ -300,4 +301,7 @@ export const POST = withAuth(async (request) => {
     console.error("ask error:", error?.stack || error?.message || error);
     return createErrorResponse("Ask failed", 500, error?.message || "unknown");
   }
-});
+}
+
+// Export the POST handler with auth middleware
+export const POST = withAuth(handlePost);

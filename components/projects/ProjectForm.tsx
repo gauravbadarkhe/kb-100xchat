@@ -5,8 +5,7 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { useAuth } from '@/components/auth/AuthProvider';
-import { projectsRepo, sourcesRepo } from '@/src/auth/repositories';
-import { ProjectRow, SourceRow, CreateProjectInput, UpdateProjectInput } from '@/src/auth/types';
+import { ProjectRow, SourceRow } from '@/src/auth/types';
 
 interface ProjectFormProps {
   project?: ProjectRow; // If provided, it's edit mode
@@ -47,8 +46,17 @@ export function ProjectForm({ project, onSuccess, onCancel }: ProjectFormProps) 
     if (!authContext?.organization_id) return;
 
     try {
-      const orgSources = await sourcesRepo.findActive(authContext.organization_id);
-      setSources(orgSources);
+      const response = await fetch('/api/sources', {
+        credentials: 'include'
+      });
+      
+      if (!response.ok) {
+        throw new Error('Failed to fetch sources');
+      }
+      
+      const data = await response.json();
+      const activeSources = (data.sources || []).filter((s: any) => s.is_active);
+      setSources(activeSources);
     } catch (err) {
       console.error('Failed to load sources:', err);
     }
@@ -65,25 +73,49 @@ export function ProjectForm({ project, onSuccess, onCancel }: ProjectFormProps) 
       let savedProject: ProjectRow;
 
       if (isEditMode && project) {
-        // Update existing project
-        const updateData: UpdateProjectInput = {
-          name: formData.name,
-          description: formData.description || undefined,
-          source_id: formData.source_id || undefined,
-          settings: formData.settings
-        };
-        savedProject = await projectsRepo.update(project.id, updateData);
+        // Update existing project via API
+        const response = await fetch(`/api/projects/${project.id}`, {
+          method: 'PUT',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          credentials: 'include',
+          body: JSON.stringify({
+            name: formData.name,
+            description: formData.description || undefined,
+            source_id: formData.source_id || undefined,
+            settings: formData.settings
+          })
+        });
+
+        if (!response.ok) {
+          const errorData = await response.json().catch(() => ({}));
+          throw new Error(errorData.error || 'Failed to update project');
+        }
+
+        savedProject = await response.json();
       } else {
-        // Create new project
-        const createData: CreateProjectInput = {
-          organization_id: authContext.organization_id,
-          created_by: authContext.user_id,
-          name: formData.name,
-          description: formData.description || undefined,
-          source_id: formData.source_id || undefined,
-          settings: formData.settings
-        };
-        savedProject = await projectsRepo.create(createData);
+        // Create new project via API
+        const response = await fetch('/api/projects', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          credentials: 'include',
+          body: JSON.stringify({
+            name: formData.name,
+            description: formData.description || undefined,
+            source_id: formData.source_id || undefined,
+            settings: formData.settings
+          })
+        });
+
+        if (!response.ok) {
+          const errorData = await response.json().catch(() => ({}));
+          throw new Error(errorData.error || 'Failed to create project');
+        }
+
+        savedProject = await response.json();
       }
 
       onSuccess?.(savedProject);

@@ -354,7 +354,7 @@ export class BaseCRUD<T extends Record<string, any>, TCreate, TUpdate> {
 export async function withTransaction<T>(
   callback: (client: any) => Promise<T>
 ): Promise<T> {
-  const client = await db.getClient();
+  const client = await db.connect();
   try {
     await client.query('BEGIN');
     const result = await callback(client);

@@ -5,7 +5,6 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { useAuth } from '@/components/auth/AuthProvider';
-import { sourcesRepo } from '@/src/auth/repositories';
 import { SourceRow, SourceType } from '@/src/auth/types';
 
 interface SourcesListProps {
@@ -36,10 +35,16 @@ export function SourcesList({ onSourceSelect, onCreateSource, onEditSource }: So
 
     setIsLoading(true);
     try {
-      const orgSources = await sourcesRepo.findByOrganization(authContext.organization_id, {
-        sort: [{ field: 'created_at', direction: 'DESC' }]
+      const response = await fetch('/api/sources', {
+        credentials: 'include'
       });
-      setSources(orgSources);
+      
+      if (!response.ok) {
+        throw new Error('Failed to fetch sources');
+      }
+      
+      const data = await response.json();
+      setSources(data.sources || []);
     } catch (err: any) {
       setError('Failed to load sources');
     } finally {
@@ -68,7 +73,21 @@ export function SourcesList({ onSourceSelect, onCreateSource, onEditSource }: So
 
   const handleToggleActive = async (source: SourceRow) => {
     try {
-      await sourcesRepo.toggleActive(source.id);
+      const response = await fetch(`/api/sources/${source.id}`, {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        credentials: 'include',
+        body: JSON.stringify({
+          is_active: !source.is_active
+        })
+      });
+      
+      if (!response.ok) {
+        throw new Error('Failed to update source status');
+      }
+      
       await loadSources();
     } catch (err: any) {
       setError('Failed to update source status');
@@ -77,7 +96,15 @@ export function SourcesList({ onSourceSelect, onCreateSource, onEditSource }: So
 
   const handleSync = async (source: SourceRow) => {
     try {
-      await sourcesRepo.updateSyncStatus(source.id, 'syncing');
+      const response = await fetch(`/api/sources/${source.id}/sync`, {
+        method: 'POST',
+        credentials: 'include'
+      });
+      
+      if (!response.ok) {
+        throw new Error('Failed to trigger sync');
+      }
+      
       await loadSources();
       // TODO: Implement actual sync logic
       alert('Sync initiated (implementation pending)');

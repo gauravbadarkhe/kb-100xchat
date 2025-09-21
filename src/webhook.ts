@@ -1,16 +1,26 @@
 // src/webhook.ts
 import type { EmitterWebhookEvent } from "@octokit/webhooks";
-import { onPush, onInstallation, onInstallationRepos } from "./sync";
+import { 
+  handleInstallationEvent, 
+  handleInstallationRepositoriesEvent, 
+  handlePushEvent 
+} from "./webhook/handlers";
 
 export async function handleWebhook(e: EmitterWebhookEvent) {
-  switch (e.name) {
-    case "installation":
-      return onInstallation(e);
-    case "installation_repositories":
-      return onInstallationRepos(e);
-    case "push":
-      return onPush(e);
-    default:
-      return;
+  try {
+    switch (e.name) {
+      case "installation":
+        return await handleInstallationEvent(e);
+      case "installation_repositories":
+        return await handleInstallationRepositoriesEvent(e);
+      case "push":
+        return await handlePushEvent(e);
+      default:
+        console.log(`Unhandled webhook event: ${e.name}`);
+        return;
+    }
+  } catch (error) {
+    console.error(`Error handling webhook event ${e.name}:`, error);
+    throw error;
   }
 }

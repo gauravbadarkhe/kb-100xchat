@@ -17,7 +17,12 @@ interface AuthFlowProps {
 }
 
 export function AuthFlow({ onAuthSuccess, onAuthError, initialState = 'login' }: AuthFlowProps) {
-  const [authState, setAuthState] = useState<AuthState>({ type: initialState });
+  const [authState, setAuthState] = useState<AuthState>(() => {
+    if (initialState === 'create-organization') {
+      return { type: 'create-organization', authId: '', email: '' };
+    }
+    return { type: initialState };
+  });
   const [isLoading, setIsLoading] = useState(false);
 
   const handleAuthSuccess = (user: any, organization?: any) => {
