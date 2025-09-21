@@ -76,6 +76,79 @@ create index if not exists idx_chunks_trgm on chunks using gin (text gin_trgm_op
 -- alter
 -- add blob_sha; keep commit_sha as commit-only
 alter table documents add column if not exists blob_sha text;
+
+
+
+
+-- SYMBOLS: top-level functions/classes/interfaces/etc.
+create table if not exists symbols (
+  id           bigserial primary key,
+  document_id  bigint not null references documents(id) on delete cascade,
+  language     text not null,
+  kind         text not null,            -- function | method | class | interface | type | enum
+  name         text not null,            -- fully-qualified when available
+  signature    text,
+  start_line   int,
+  end_line     int,
+  modifiers    jsonb default '{}'::jsonb,
+  meta         jsonb default '{}'::jsonb
+);
+create index if not exists ix_symbols_doc       on symbols(document_id);
+create index if not exists ix_symbols_name      on symbols(name);
+create index if not exists ix_symbols_kind_name on symbols(kind, name);
+
+-- ENDPOINTS: generic HTTP/RPC route handlers (Nest, FastAPI, Spring, etc.)
+create table if not exists endpoints (
+  id             bigserial primary key,
+  document_id    bigint not null references documents(id) on delete cascade,
+  language       text not null,
+  protocol       text not null default 'http',  -- http|grpc|cli|rpc
+  method         text,                          -- GET/POST/...
+  path           text,                          -- /v1/orders
+  operation_id   text,
+  handler_name   text,                          -- Controller.method or equivalent
+  start_line     int,
+  end_line       int,
+  decorators     jsonb default '[]'::jsonb,
+  request_shape  jsonb,
+  response_shape jsonb,
+  meta           jsonb default '{}'::jsonb
+);
+create index if not exists ix_endpoints_path on endpoints(path);
+create index if not exists ix_endpoints_proto_method_path on endpoints(protocol, method, path);
+
+-- EDGES: generic relationships (pubsub publish/consume, http calls, db calls)
+create table if not exists edges (
+  id                bigserial primary key,
+  from_document_id  bigint not null references documents(id) on delete cascade,
+  from_symbol_name  text,
+  edge_type         text not null,              -- pubsub.publish | pubsub.consume | http.call | db.call | emits | reads
+  to_kind           text not null,              -- topic | url | orm | queue | stream
+  to_value          text not null,              -- topic name, URL/path, orm method, etc.
+  start_line        int,
+  end_line          int,
+  meta              jsonb default '{}'::jsonb
+);
+create index if not exists ix_edges_type_kind_value on edges(edge_type, to_kind, to_value);
+create index if not exists ix_edges_from_doc         on edges(from_document_id);
+
+-- FINDINGS: lints/security scanners (eslint/semgrep/codeql)
+create table if not exists findings (
+  id           bigserial primary key,
+  document_id  bigint references documents(id) on delete cascade,
+  tool         text not null,
+  rule_id      text not null,
+  severity     text not null,                  -- info|warn|error|high|critical
+  message      text not null,
+  start_line   int,
+  end_line     int,
+  fingerprint  text,
+  meta         jsonb default '{}'::jsonb,
+  created_at   timestamptz default now()
+);
+create index if not exists ix_findings_doc on findings(document_id);
+create index if not exists ix_findings_sev on findings(severity);
+
 `;
 
 async function main() {

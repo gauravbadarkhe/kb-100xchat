@@ -8,6 +8,8 @@ import crypto from "crypto";
 import { makeIgnore } from "./gitignore";
 import { chunkNestControllers } from "./chunkers/nest";
 import { repos } from "./repo";
+import { persistAnalysis } from "./analysis/presists";
+import { upsertFactsheetsForDocument } from "./analysis/factsheet";
 
 const BINARY_RE =
   /\.(png|jpg|jpeg|gif|pdf|zip|tgz|ico|woff2?|ttf|exe|dylib|so|jar)$/i;
@@ -92,6 +94,10 @@ async function syncFile(
       sha,
       blobSha: sha,
     });
+
+    // inside syncFile after you computed `content`, `lang`, and upserted the document:
+    await persistAnalysis({ documentId: doc.id, path, lang, content });
+    await upsertFactsheetsForDocument(doc.id);
 
     // Embed + replace chunks via repo layer
     const texts = chunks.map((c) => c.text);
@@ -227,6 +233,9 @@ export async function fullSync(installationId: number, fullName: string) {
         sha: fileSha,
         blobSha: fileSha,
       });
+
+      await persistAnalysis({ documentId: doc.id, path, lang, content });
+      await upsertFactsheetsForDocument(doc.id);
 
       const chunks =
         lang === "md" || lang === "mdx"

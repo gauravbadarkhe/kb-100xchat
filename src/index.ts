@@ -5,6 +5,7 @@ import { Webhooks, createNodeMiddleware } from "@octokit/webhooks";
 import { handleWebhook } from "./webhook";
 import { search } from "./util";
 import { fullSync } from "./sync";
+import { ask as askv2 } from "./api/ask";
 import { ask } from "./rag";
 
 const webhooks = new Webhooks({ secret: process.env.GITHUB_WEBHOOK_SECRET! });
@@ -32,6 +33,7 @@ app.post("/index/full", express.json(), async (req, res) => {
 });
 
 app.post("/ask", express.json(), ask);
+app.post("/ask/v2", express.json(), askv2);
 
 app.listen(process.env.PORT || 3000, () =>
   console.log("up on", process.env.PORT || 3000),

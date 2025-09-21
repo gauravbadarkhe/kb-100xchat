@@ -17,7 +17,7 @@ export function getAIConfig(): AIConfig {
 function defaultChatModel(p: string) {
   if (p === "anthropic") return "claude-3-5-sonnet-latest";
   if (p === "google") return "gemini-1.5-pro";
-  return "gpt-4o-mini";
+  return "gpt-5-mini";
 }
 
 function defaultEmbedModel(p: string) {
