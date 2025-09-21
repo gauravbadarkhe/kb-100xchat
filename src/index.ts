@@ -11,7 +11,7 @@ const webhooks = new Webhooks({ secret: process.env.GITHUB_WEBHOOK_SECRET! });
 webhooks.onAny(handleWebhook);
 
 const app = express();
-app.use(createNodeMiddleware(webhooks, { path: "/webhooks" }));
+app.use(createNodeMiddleware(webhooks, { path: "/api/webhooks" }));
 app.get("/health", (_req, res) => res.send("ok"));
 
 app.get("/search", async (req, res) => {
